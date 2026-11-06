@@ -73,7 +73,7 @@ export DEEPSEEK_API_KEY=sk-xxx
   "notify": { "macos": true, "terminal": true, "sound": "Ping" },
   "ai": { "enabled": true, "model": "deepseek-chat",
           "explain_alerts": true, "daily_review": true },
-  "network": { "use_proxy": false },
+  "network": { "use_proxy": null },
   "default_rules": {
     "change_pct_up": 3.0, "change_pct_down": -3.0, "volume_ratio": 2.0,
     "ma_cross": ["5_20"], "drawdown_pct": -8.0
