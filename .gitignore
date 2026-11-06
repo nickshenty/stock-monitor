@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# 本地配置与运行状态（含自选、成本价、持仓，属个人数据）
+config/
+*.local.json
+
+# 密钥
+.env
+.env.*
+secrets.json
+
+# 系统/编辑器
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# 日志
+*.log
