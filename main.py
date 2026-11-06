@@ -55,6 +55,8 @@ class KlineCache:
         self.source = source
         self.limit = limit
         self._cache: Dict[str, Dict] = {}   # secid -> {'date': str, 'bars': list}
+        # K线取不到时均线/回撤规则会静默失效，这里记下失败原因供上层上报
+        self.failed: Dict[str, str] = {}
 
     def get_bars(self, secid: str, quote: Optional[Dict] = None) -> List[Dict]:
         """取K线，并用实时报价校准当天那根"""
@@ -64,7 +66,9 @@ class KlineCache:
         if not cached or cached["date"] != today:
             result = self.source.get_daily_kline(secid, limit=self.limit)
             if not result["success"]:
+                self.failed[secid] = result.get("error", "未知错误")
                 return cached["bars"] if cached else []
+            self.failed.pop(secid, None)
             self._cache[secid] = {"date": today, "bars": result["bars"]}
             cached = self._cache[secid]
 
@@ -217,9 +221,13 @@ def scan_once(cm: ConfigManager, source: EastMoneySource,
         all_alerts.extend(engine.evaluate(item, quote, metrics, rules))
 
     rows = build_board(items, quotes, metrics_map)
+    # 只统计成功拿到报价、却拿不到K线的标的——报价失败的已经算在 failed 里
+    kline_failed = [s for s in metrics_map if s in cache.failed]
     return {"rows": rows, "alerts": engine.sort_alerts(all_alerts),
             "metrics_map": metrics_map, "total": len(items),
-            "failed": len(errors), "errors": errors[:3]}
+            "failed": len(errors), "errors": errors[:3],
+            "kline_failed": len(kline_failed),
+            "kline_errors": [cache.failed[s] for s in kline_failed][:2]}
 
 
 def record_day_alerts(state: Dict, alerts: List[Alert]) -> Dict:
@@ -355,6 +363,13 @@ def cmd_check(cm: ConfigManager, source: EastMoneySource,
             console.print(f"[dim]    {err[:150]}[/dim]")
         if result["failed"] == result["total"]:
             return 1
+
+    # K线缺失时均线/回撤/量比类规则会静默失效，也要说出来
+    if result.get("kline_failed"):
+        console.print(f"[yellow]⚠️ {result['kline_failed']} 个标的K线获取失败，"
+                      f"均线交叉/回撤规则本次未生效[/yellow]")
+        for err in result.get("kline_errors", []):
+            console.print(f"[dim]    {err[:150]}[/dim]")
 
     alerts = result["alerts"]
     if not alerts:
@@ -495,6 +510,9 @@ def cmd_watch(cm: ConfigManager, source: EastMoneySource,
                         f"{total}个标的  {ups}涨{total - ups}跌  无触发[/dim]")
                 if result["failed"]:
                     line += f"  [yellow]{result['failed']}个取数失败[/yellow]"
+                if result.get("kline_failed"):
+                    line += (f"  [yellow]K线缺失"
+                             f"{result['kline_failed']}个[/yellow]")
                 console.print(line)
 
         for _ in range(interval):
