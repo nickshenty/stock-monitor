@@ -57,23 +57,36 @@ class EastMoneySource:
     KLINE_URL = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
 
     def __init__(self, timeout: int = 10, retries: int = 2,
-                 use_proxy: bool = False):
+                 use_proxy: Optional[bool] = None):
+        """use_proxy: None=自动（先按系统设置，失败再换另一种），
+                      True=强制走系统代理，False=强制直连
+        """
         self.timeout = timeout
-        self.session = requests.Session()
-        # 东财是国内站点，直连即可。很多人机器上开着 Clash 之类的系统代理，
-        # requests 会自动读取并把行情请求也绕进代理——既无必要，又多一个
-        # 故障点（代理一抖整轮盯盘就取不到数）。默认绕开系统代理设置。
-        self.session.trust_env = use_proxy
-        self.session.headers.update({
+        self.retries = retries
+        self.use_proxy = use_proxy
+
+        # 同一台机器上"走代理"和"直连"哪个能通并不固定：有的网络直连东财
+        # 没问题，有的网络必须经代理才好使。硬编码任何一种，都会在另一类
+        # 环境下直接失效，所以两条路都备着，主路径失败就换另一条重试。
+        self.session = self._build_session(trust_env=use_proxy is not False)
+        self._alt_session = (self._build_session(trust_env=use_proxy is False)
+                             if use_proxy is None else None)
+        self._secid_cache: Dict[str, str] = {}
+
+    def _build_session(self, trust_env: bool) -> requests.Session:
+        session = requests.Session()
+        # trust_env=True 时会读取系统代理设置（macOS 上的 Clash 等就在其中）
+        session.trust_env = trust_env
+        session.headers.update({
             "User-Agent": _UA,
             "Referer": "https://quote.eastmoney.com/",
         })
         # 网络抖动、东财偶发 5xx 都会让单轮盯盘失效，
         # 这里做短重试：盯盘是长时间运行，不能一次抖动就瞎掉。
         retry = Retry(
-            total=retries,
-            connect=retries,
-            read=retries,
+            total=self.retries,
+            connect=self.retries,
+            read=self.retries,
             backoff_factor=0.5,          # 0.5s, 1.0s
             status_forcelist=(429, 500, 502, 503, 504),
             allowed_methods=frozenset(["GET"]),
@@ -81,9 +94,31 @@ class EastMoneySource:
         )
         adapter = HTTPAdapter(max_retries=retry, pool_connections=4,
                               pool_maxsize=8)
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
-        self._secid_cache: Dict[str, str] = {}
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        return session
+
+    def _get(self, url: str, params: Dict):
+        """发请求：主路径失败时自动切换代理/直连，并把能通的那条记为主路径"""
+        sessions = [self.session]
+        if self._alt_session is not None:
+            sessions.append(self._alt_session)
+
+        last_error: Optional[Exception] = None
+        for idx, session in enumerate(sessions):
+            try:
+                resp = session.get(url, params=params, timeout=self.timeout)
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                last_error = e
+                continue
+
+            # 备用路径成功，说明在这个网络下它更靠谱，交换为主路径
+            if idx == 1:
+                self.session, self._alt_session = session, self.session
+            return resp
+
+        raise last_error if last_error else RuntimeError("请求失败")
 
     # ---------- 代码解析 ----------
 
@@ -131,7 +166,7 @@ class EastMoneySource:
 
         # 走搜索接口
         try:
-            resp = self.session.get(
+            resp = self._get(
                 self.SEARCH_URL,
                 params={
                     "input": keyword,
@@ -139,9 +174,7 @@ class EastMoneySource:
                     "token": "D43BF722C8E33BDC906FB84D85E326E8",
                     "count": "5",
                 },
-                timeout=self.timeout,
             )
-            resp.raise_for_status()
             data = resp.json()
             items = (data.get("QuotationCodeTable") or {}).get("Data") or []
             if not items:
@@ -181,13 +214,11 @@ class EastMoneySource:
     def get_quote(self, secid: str) -> Dict:
         """单只标的实时报价"""
         try:
-            resp = self.session.get(
+            resp = self._get(
                 self.QUOTE_URL,
                 params={"secid": secid, "fields": _QUOTE_FIELDS,
                         "invt": "2", "fltt": "2"},
-                timeout=self.timeout,
             )
-            resp.raise_for_status()
             payload = resp.json()
             data = payload.get("data")
             if not data:
@@ -229,13 +260,11 @@ class EastMoneySource:
         for i in range(0, len(secids), 50):
             batch = secids[i:i + 50]
             try:
-                resp = self.session.get(
+                resp = self._get(
                     self.LIST_URL,
                     params={"secids": ",".join(batch), "fields": _LIST_FIELDS,
                             "invt": "2", "fltt": "2"},
-                    timeout=self.timeout,
                 )
-                resp.raise_for_status()
                 payload = resp.json()
                 diff = (payload.get("data") or {}).get("diff") or []
 
@@ -285,7 +314,7 @@ class EastMoneySource:
             bars 按时间正序，最后一根是今天（开盘时为当前动态值）
         """
         try:
-            resp = self.session.get(
+            resp = self._get(
                 self.KLINE_URL,
                 params={
                     "secid": secid,
@@ -296,9 +325,7 @@ class EastMoneySource:
                     "end": "20500101",
                     "lmt": str(limit),
                 },
-                timeout=self.timeout,
             )
-            resp.raise_for_status()
             payload = resp.json()
             data = payload.get("data")
             if not data or not data.get("klines"):

@@ -24,9 +24,10 @@ DEFAULT_CONFIG = {
         "daily_review": True,     # 收盘后复盘
     },
     "network": {
-        # 行情请求是否走系统代理。东财是国内站点，默认直连；
-        # 若你的网络必须经代理才能访问东财，改成 true。
-        "use_proxy": False,
+        # 行情请求走代理还是直连。默认 null=自动（先按系统代理设置，
+        # 失败自动换另一条路并记住）；true=只走系统代理；false=只直连。
+        # 不同网络下哪个能通不一样，一般不用改。
+        "use_proxy": None,
     },
     # 全局默认规则，可被单个标的的 rules 覆盖
     "default_rules": {

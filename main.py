@@ -595,9 +595,9 @@ def main() -> int:
         return 0
 
     cm = ConfigManager(args.config_dir)
-    # 默认直连东财；若用户所在网络必须走代理，可在配置里设 network.use_proxy
+    # network.use_proxy: null=自动（走不通就换另一条路），true/false=强制
     source = EastMoneySource(
-        use_proxy=bool(cm.load().get("network", {}).get("use_proxy", False))
+        use_proxy=cm.load().get("network", {}).get("use_proxy")
     )
 
     try:
